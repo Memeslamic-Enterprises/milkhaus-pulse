@@ -1,0 +1,53 @@
+name: pulse
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pulse
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+
+      # State between runs. Cache keys are immutable, so every run saves a
+      # fresh key and restores the newest one that exists.
+      - uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: pulse-state-${{ github.run_id }}
+          restore-keys: pulse-state-
+
+      - run: python3 pulse.py
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: state
+          key: pulse-state-${{ github.run_id }}
+
+      # GitHub disables cron on repos with no commits for 60 days; a monthly
+      # heartbeat commit keeps the watch standing. First run of the 1st.
+      - name: keep the schedule alive
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "$(date -u +%d%H)" = "0100" ] || [ "$(date -u +%d%H)" = "0101" ]; then
+            git config user.name "pulse"
+            git config user.email "pulse@users.noreply.github.com"
+            date -u +"last heartbeat: %Y-%m-%d" > STATUS.md
+            git add STATUS.md
+            git commit -m "monthly heartbeat" && git push || true
+          fi
