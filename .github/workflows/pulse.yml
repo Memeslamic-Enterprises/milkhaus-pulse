@@ -32,6 +32,9 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          MILKCAT_WEBHOOK_URL: ${{ secrets.MILKCAT_WEBHOOK_URL }}
+          MILKCAT_BOT_TOKEN: ${{ secrets.MILKCAT_BOT_TOKEN }}
+          MILKCAT_CHANNEL_ID: ${{ secrets.MILKCAT_CHANNEL_ID }}
 
       - uses: actions/cache/save@v4
         if: always()

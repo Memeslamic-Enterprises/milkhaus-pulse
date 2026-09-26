@@ -14,9 +14,10 @@ State (last verdict, whether an outage was announced) rides between runs in
 the Actions cache; a transient blip is absorbed by requiring two consecutive
 failing runs before anything is said.
 
-Posting prefers DISCORD_WEBHOOK_URL; with only DISCORD_BOT_TOKEN and
-DISCORD_CHANNEL_ID it posts through the bot instead. Either way the message
-appears in the announce channel as teto.
+Each configured target - DISCORD_* (Budget Mania) and MILKCAT_* (Milkcat's
+Support) - is posted to independently, and a failed one is retried next run.
+Each prefers its WEBHOOK_URL; with only BOT_TOKEN and CHANNEL_ID it posts
+through that bot. Either way the message appears as teto.
 """
 from __future__ import annotations
 
@@ -42,6 +43,7 @@ TIMEOUT = 10
 # Failing runs in a row before the outage is announced (cron is */5, so two
 # runs is roughly ten minutes of confirmed silence).
 RUNS_BEFORE_ANNOUNCING = 2
+TARGET_PREFIXES = ("DISCORD_", "MILKCAT_")
 
 DOWN_MESSAGE = (
     "\N{WARNING SIGN} word from outside the walls: the homelab has dropped off "
@@ -126,10 +128,21 @@ def web_alive(url: str) -> tuple[bool, str]:
         return False, f"{type(exc).__name__}"[:60]
 
 
-def post_to_discord(text: str) -> None:
-    webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
-    token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
-    channel = os.environ.get("DISCORD_CHANNEL_ID", "").strip()
+def configured_targets() -> tuple[str, ...]:
+    targets = []
+    for prefix in TARGET_PREFIXES:
+        webhook = os.environ.get(f"{prefix}WEBHOOK_URL", "").strip()
+        token = os.environ.get(f"{prefix}BOT_TOKEN", "").strip()
+        channel = os.environ.get(f"{prefix}CHANNEL_ID", "").strip()
+        if webhook or (token and channel):
+            targets.append(prefix)
+    return tuple(targets)
+
+
+def post_to_discord(prefix: str, text: str) -> None:
+    webhook = os.environ.get(f"{prefix}WEBHOOK_URL", "").strip()
+    token = os.environ.get(f"{prefix}BOT_TOKEN", "").strip()
+    channel = os.environ.get(f"{prefix}CHANNEL_ID", "").strip()
     if webhook:
         url, headers = webhook, {"Content-Type": "application/json"}
     elif token and channel:
@@ -139,13 +152,25 @@ def post_to_discord(text: str) -> None:
             "Authorization": f"Bot {token}",
             "User-Agent": "DiscordBot (milkhaus-pulse, 1.0)",
         }
-    else:
-        print("no Discord credentials configured; would have said:", text)
-        return
     body = json.dumps({"content": text}).encode()
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
-        print("posted to Discord:", response.status)
+        print(f"posted to {prefix}", response.status)
+
+
+def post_to_targets(text: str, targets: tuple[str, ...]) -> tuple[list[str], bool]:
+    if not configured_targets():
+        print("no Discord credentials configured; would have said:", text)
+    succeeded = []
+    failed = False
+    for prefix in targets:
+        try:
+            post_to_discord(prefix, text)
+            succeeded.append(prefix)
+        except Exception as exc:  # noqa: BLE001 - targets must be independent
+            print(f"{prefix} post failed: {type(exc).__name__}: {exc}")
+            failed = True
+    return succeeded, failed
 
 
 def load_state() -> dict:
@@ -183,23 +208,41 @@ def main() -> int:
           f"web: {'up' if web_ok else 'DOWN'} ({web_detail})")
 
     state = load_state()
+    if state.get("announced") and "told" not in state:
+        state["told"] = ["DISCORD_"]
+    state.setdefault("told", [])
     now = time.time()
+    targets = configured_targets()
+    post_failed = False
 
     if down:
         streak = int(state.get("streak", 0)) + 1
         state.update({"streak": streak, "since": state.get("since") or now})
-        if streak >= RUNS_BEFORE_ANNOUNCING and not state.get("announced"):
-            post_to_discord(DOWN_MESSAGE.format(mc=mc_detail))
-            state["announced"] = True
-            state["announced_at"] = datetime.now(timezone.utc).isoformat()
+        if streak >= RUNS_BEFORE_ANNOUNCING:
+            untold = tuple(target for target in targets if target not in state["told"])
+            if untold or not targets and not state.get("announced"):
+                succeeded, post_failed = post_to_targets(
+                    DOWN_MESSAGE.format(mc=mc_detail), untold
+                )
+                state["told"].extend(succeeded)
+            if not state.get("announced"):
+                state["announced"] = True
+                state["announced_at"] = datetime.now(timezone.utc).isoformat()
     else:
         if state.get("announced"):
             gap = humanize(now - float(state.get("since") or now))
-            post_to_discord(UP_MESSAGE.format(gap=gap))
-        state = {"streak": 0, "announced": False, "since": None}
+            pending = tuple(target for target in targets if target in state["told"])
+            succeeded, post_failed = post_to_targets(UP_MESSAGE.format(gap=gap), pending)
+            failed = [target for target in pending if target not in succeeded]
+            if failed:
+                state.update({"streak": 0, "told": failed})
+            else:
+                state = {"streak": 0, "announced": False, "since": None, "told": []}
+        else:
+            state = {"streak": 0, "announced": False, "since": None, "told": []}
 
     save_state(state)
-    return 0
+    return 1 if post_failed else 0
 
 
 if __name__ == "__main__":

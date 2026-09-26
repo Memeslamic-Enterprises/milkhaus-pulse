@@ -19,6 +19,8 @@ Secrets (repo Settings → Secrets and variables → Actions):
 |---|---|
 | `DISCORD_WEBHOOK_URL` | preferred: a channel webhook; used alone if set |
 | `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` | fallback: post through the bot |
+| `MILKCAT_WEBHOOK_URL` | optional second target: preferred channel webhook |
+| `MILKCAT_BOT_TOKEN` + `MILKCAT_CHANNEL_ID` | optional fallback pair; unset = only the first target |
 
 Nothing here holds a secret in code, and the hostnames are the public ones
 players already use.
